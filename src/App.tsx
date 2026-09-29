@@ -160,6 +160,7 @@ const TIERS: Tier[] = [
 const EVENT_TYPES = ["Wedding", "Birthday", "Corporate event", "Other"];
 
 const SHOT_COUNT = 4;
+const COUNTDOWN_SECONDS = 5;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function loadImage(src: string) {
@@ -248,6 +249,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>("demo");
   const [photos, setPhotos] = useState<string[]>([]);
   const [count, setCount] = useState(0);
+  const [running, setRunning] = useState(false);
   const [camError, setCamError] = useState("");
   const [stripUrl, setStripUrl] = useState("");
   const streamRef = useRef<MediaStream | null>(null);
@@ -273,6 +275,7 @@ export default function App() {
       });
       setPhotos([]);
       setStripUrl("");
+      setRunning(false);
       setMode("camera");
     } catch (err) {
       const denied = err instanceof DOMException && err.name === "NotAllowedError";
@@ -292,41 +295,50 @@ export default function App() {
     }
   };
 
-  const takePhoto = async () => {
-    const video = videoRef.current;
-    if (!video || count) return;
+  /** One click runs the whole booth: 5-4-3-2-1, snap, hold the photo for 1s, repeat. */
+  const startSequence = async () => {
+    if (running) return;
     const id = ++runId.current;
-    for (let c = 3; c > 0; c--) {
-      setCount(c);
-      await sleep(800);
-      if (runId.current !== id) return; // cancelled
+    setRunning(true);
+    setPhotos([]);
+    const taken: string[] = [];
+    for (let shot = 0; shot < SHOT_COUNT; shot++) {
+      for (let c = COUNTDOWN_SECONDS; c > 0; c--) {
+        setCount(c);
+        await sleep(1000);
+        if (runId.current !== id) return; // cancelled
+      }
+      setCount(0);
+      const video = videoRef.current;
+      if (!video) return;
+      const vw = video.videoWidth || 720, vh = video.videoHeight || 660;
+      const target = 120 / 110;
+      let sw = vw, sh = vh;
+      if (vw / vh > target) sw = vh * target; else sh = vw / target;
+      const canvas = document.createElement("canvas");
+      canvas.width = 720;
+      canvas.height = 660;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.translate(720, 0);
+      ctx.scale(-1, 1); // mirror, like the preview
+      ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, 720, 660);
+      taken.push(canvas.toDataURL("image/jpeg", 0.92));
+      setPhotos([...taken]);
+      setShots((n) => n + 1); // camera flash
+      await sleep(1000); // hold the new photo on screen
+      if (runId.current !== id) return;
     }
-    setCount(0);
-    const vw = video.videoWidth || 720, vh = video.videoHeight || 660;
-    const target = 120 / 110;
-    let sw = vw, sh = vh;
-    if (vw / vh > target) sw = vh * target; else sh = vw / target;
-    const canvas = document.createElement("canvas");
-    canvas.width = 720;
-    canvas.height = 660;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.translate(720, 0);
-    ctx.scale(-1, 1); // mirror, like the preview
-    ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, 720, 660);
-    setShots((n) => n + 1); // camera flash
-    const next = [...photos, canvas.toDataURL("image/jpeg", 0.92)];
-    setPhotos(next);
-    if (next.length === SHOT_COUNT) {
-      stopCamera();
-      setStripUrl(await composeStrip(next));
-      setMode("done");
-    }
+    stopCamera();
+    setStripUrl(await composeStrip(taken));
+    setRunning(false);
+    setMode("done");
   };
 
   const cancelCamera = () => {
     runId.current++;
     stopCamera();
+    setRunning(false);
     setCount(0);
     setPhotos([]);
     setMode("demo");
@@ -423,8 +435,8 @@ export default function App() {
                   )}
                   {mode === "camera" && (
                     <>
-                      <button className="btn accent sm" onClick={takePhoto} disabled={count > 0}>
-                        {count > 0 ? "Hold still" : `Take photo ${photos.length + 1} of ${SHOT_COUNT}`}
+                      <button className="btn accent sm" onClick={startSequence} disabled={running}>
+                        {running ? `Photo ${Math.min(photos.length + 1, SHOT_COUNT)} of ${SHOT_COUNT}` : `Start ${SHOT_COUNT} photos`}
                       </button>
                       <button className="btn ghost sm" onClick={cancelCamera}>Cancel</button>
                     </>
